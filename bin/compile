@@ -1,34 +1,117 @@
 #!/usr/bin/env bash
 # bin/compile <build-dir> <cache-dir> <env-dir>
+#
+# Flattens $MONOREPO_PROJECT_PATH up to the build root, optionally moving
+# extra top-level dirs into the project first so they survive the flatten.
+#
+#   MONOREPO_PROJECT_PATH=services/webapp
+#   MONOREPO_MV_PATHS="student_app:services/webapp/tmp/student_app"
+#   MONOREPO_MV_PATHS="student_app:services/webapp/tmp/student_app,shared/proto:services/webapp/lib/proto"
+#
+# Each entry is src:dest, comma separated. Both sides are relative to the
+# repo root, and both are required. dest must live inside
+# MONOREPO_PROJECT_PATH so that it survives the flatten.
+#
+# Moved dirs are recorded in .build_only_dirs at the build root for a
+# trailing cleanup buildpack to prune before slug packaging.
 
-# Ensure wildcards in globs match dotfiles too.
+set -euo pipefail
 shopt -s dotglob
 
 BUILD_DIR=${1:-}
-CACHE_DIR=${2:-}
 ENV_DIR=${3:-}
 
-if [ -f $ENV_DIR/PROJECT_PATH ]; then
-	PROJECT_PATH=`cat $ENV_DIR/PROJECT_PATH`
-	if [ -d $BUILD_DIR/$PROJECT_PATH ]; then
-		echo "-----> Subdir buildpack in $PROJECT_PATH"
-		echo "       creating cache: $CACHE_DIR"
-		mkdir -p $CACHE_DIR
-		TMP_DIR=`mktemp -d $CACHE_DIR/subdirXXXXX`
-		echo "       created tmp dir: $TMP_DIR"
-		echo "       moving working dir: $PROJECT_PATH to $TMP_DIR"
-		cp -R $BUILD_DIR/$PROJECT_PATH/. $TMP_DIR/
-	 	echo "       cleaning build dir $BUILD_DIR"
-		rm -rf $BUILD_DIR/*
-		echo "       copying preserved work dir from cache $TMP_DIR to build dir $BUILD_DIR"
-		cp -R $TMP_DIR/. $BUILD_DIR/
-		echo "       cleaning tmp dir $TMP_DIR"
-		rm -rf $TMP_DIR
-		exit 0
-	fi
+STAGE_NAME=.subdir_stage
+
+read_env() {
+	[ -f "$ENV_DIR/$1" ] && cat "$ENV_DIR/$1" || true
+}
+
+MONOREPO_PROJECT_PATH=$(read_env MONOREPO_PROJECT_PATH)
+MONOREPO_MV_PATHS=$(read_env MONOREPO_MV_PATHS)
+
+if [ -z "$MONOREPO_PROJECT_PATH" ]; then
+	echo "MONOREPO_PROJECT_PATH is undefined"
+	exit 1
 fi
 
-echo "PROJECT_PATH is undefined"
-exit 1
+if [ ! -d "$BUILD_DIR/$MONOREPO_PROJECT_PATH" ]; then
+	echo "MONOREPO_PROJECT_PATH '$MONOREPO_PROJECT_PATH' is not a directory in the build dir"
+	exit 1
+fi
 
+if [ -e "$BUILD_DIR/$STAGE_NAME" ]; then
+	echo "'$STAGE_NAME' already exists in the build dir; rename it"
+	exit 1
+fi
 
+echo "-----> Subdir buildpack in $MONOREPO_PROJECT_PATH"
+
+# --- move extra paths into the project, before the flatten ---
+MV_ENTRIES=()
+if [ -n "$MONOREPO_MV_PATHS" ]; then
+	IFS=',' read -ra MV_ENTRIES <<< "$MONOREPO_MV_PATHS"
+fi
+
+for entry in ${MV_ENTRIES[@]+"${MV_ENTRIES[@]}"}; do
+	case "$entry" in
+		*:*) ;;
+		*)
+			echo "       !! MONOREPO_MV_PATHS: '$entry' is not in src:dest form"
+			exit 1
+			;;
+	esac
+
+	src=${entry%%:*}
+	dest=${entry#*:}
+
+	if [ -z "$src" ] || [ -z "$dest" ]; then
+		echo "       !! MONOREPO_MV_PATHS: '$entry' has an empty src or dest"
+		exit 1
+	fi
+
+	if [ ! -d "$BUILD_DIR/$src" ]; then
+		echo "       !! MONOREPO_MV_PATHS: '$src' not found in build dir"
+		exit 1
+	fi
+
+	case "$src/" in
+		"$MONOREPO_PROJECT_PATH"/*)
+			echo "       !! MONOREPO_MV_PATHS: '$src' is inside MONOREPO_PROJECT_PATH"
+			exit 1
+			;;
+	esac
+
+	case "$dest/" in
+		"$MONOREPO_PROJECT_PATH"/*) ;;
+		*)
+			echo "       !! MONOREPO_MV_PATHS: '$dest' is outside MONOREPO_PROJECT_PATH, it would not survive the flatten"
+			exit 1
+			;;
+	esac
+
+	target="$BUILD_DIR/$dest"
+	if [ -e "$target" ]; then
+		echo "       !! MONOREPO_MV_PATHS: '$dest' already exists in the build dir"
+		exit 1
+	fi
+
+	echo "       moving $src -> $dest"
+	mkdir -p "$(dirname "$target")"
+	mv "$BUILD_DIR/$src" "$target"
+	# recorded relative to the project root, i.e. the build root after the flatten
+	echo "${dest#"$MONOREPO_PROJECT_PATH"/}" >> "$BUILD_DIR/$MONOREPO_PROJECT_PATH/.build_only_dirs"
+done
+
+# --- flatten: project dir becomes the build root ---
+echo "       moving $MONOREPO_PROJECT_PATH aside to $STAGE_NAME"
+mv "$BUILD_DIR/$MONOREPO_PROJECT_PATH" "$BUILD_DIR/$STAGE_NAME"
+
+echo "       cleaning build dir $BUILD_DIR"
+find "$BUILD_DIR" -mindepth 1 -maxdepth 1 ! -name "$STAGE_NAME" -exec rm -rf {} +
+
+echo "       promoting $STAGE_NAME to build root"
+mv "$BUILD_DIR/$STAGE_NAME"/* "$BUILD_DIR/"
+rmdir "$BUILD_DIR/$STAGE_NAME"
+
+exit 0
