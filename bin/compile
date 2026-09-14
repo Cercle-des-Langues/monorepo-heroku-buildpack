@@ -12,6 +12,9 @@
 # repo root, and both are required. dest must live inside
 # MONOREPO_PROJECT_PATH so that it survives the flatten.
 #
+# An entry whose src does not exist in the build dir is warned about and
+# skipped, it does not fail the build.
+#
 # Moved dirs are recorded in .build_only_dirs at the build root for a
 # trailing cleanup buildpack to prune before slug packaging.
 
@@ -71,8 +74,8 @@ for entry in ${MV_ENTRIES[@]+"${MV_ENTRIES[@]}"}; do
 	fi
 
 	if [ ! -d "$BUILD_DIR/$src" ]; then
-		echo "       !! MONOREPO_MV_PATHS: '$src' not found in build dir"
-		exit 1
+		echo "       !! MONOREPO_MV_PATHS: '$src' not found in build dir, skipping"
+		continue
 	fi
 
 	case "$src/" in

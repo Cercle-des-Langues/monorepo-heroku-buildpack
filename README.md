@@ -23,6 +23,7 @@ Comma-separated list of `src:dst` entries naming directories to move into the pr
 - `src` and `dst` are both relative to the repo root.
 - `dst` must be inside `MONOREPO_PROJECT_PATH`, otherwise it would not survive the flatten.
 - Both sides are required.
+- An entry whose `src` is missing from the build dir is warned about and skipped, it does not fail the build.
 
 ```
 MONOREPO_MV_PATHS="student_app:services/webapp/tmp/student_app"
@@ -31,7 +32,7 @@ MONOREPO_MV_PATHS="student_app:services/webapp/tmp/student_app,shared/proto:serv
 
 Each moved `dst` is appended to a `.build_only_dirs` file at the build root, relative to the project root (i.e. to the build root after the flatten), so a trailing cleanup buildpack can prune those directories before slug packaging.
 
-The build fails if an entry is not in `src:dst` form, either side is empty, `src` is not a directory in the build dir, `src` is inside `MONOREPO_PROJECT_PATH`, `dst` is outside `MONOREPO_PROJECT_PATH`, or `dst` already exists in the build dir.
+The build fails if an entry is not in `src:dst` form, either side is empty, `src` is inside `MONOREPO_PROJECT_PATH`, `dst` is outside `MONOREPO_PROJECT_PATH`, or `dst` already exists in the build dir. A missing `src` only logs a warning and the entry is skipped.
 
 # How it works
 1. Moves each `MONOREPO_MV_PATHS` source to its `dst` inside the project directory, recording the `dst` path (relative to the project root) in `.build_only_dirs`.
